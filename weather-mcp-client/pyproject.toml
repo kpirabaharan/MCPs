@@ -1,0 +1,13 @@
+[project]
+name = "weather-mcp-client"
+version = "0.1.0"
+description = "MCP client powered by DeepSeek"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp>=2.12.4",
+    "httpx>=0.28.1",
+    "mcp>=1.17.0",
+    "openai>=1.52.0",
+    "python-dotenv>=1.1.1",
+]
