@@ -1,14 +1,46 @@
 from typing import Any
 import httpx
 from fastmcp import FastMCP
+from starlette.datastructures import Headers
+from starlette.responses import Response
 from logger import get_logger
 
-mcp = FastMCP("weather")
+mcp = FastMCP(name="weather")
 
 NWS_API_BASE = "https://api.weather.gov"
 USER_AGENT = "weather-app/1.0"
 
 log = get_logger("weather_mcp_server")
+
+class AllowOptionsMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "OPTIONS":
+            headers = Headers(scope=scope)
+            origin = headers.get("origin", "*")
+            allow_headers = headers.get("access-control-request-headers", "*")
+            request_method = headers.get("access-control-request-method")
+            if request_method:
+                if request_method.upper() == "OPTIONS":
+                    allow_methods = "OPTIONS"
+                else:
+                    allow_methods = f"{request_method}, OPTIONS"
+            else:
+                allow_methods = "GET, POST, DELETE, OPTIONS"
+
+            response_headers = {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Methods": allow_methods,
+                "Access-Control-Allow-Headers": allow_headers,
+            }
+
+            response = Response(status_code=204, headers=response_headers)
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 # Helper Functions
 async def make_nws_request(url: str) -> dict[str, Any] | None:
@@ -114,10 +146,7 @@ Forecast: {period['detailedForecast']}
 def main():
     # Initialize and run the server
     log.info("Starting Weather MCP Server...")
-    # Local
-    mcp.run(transport="stdio")
-    # HTTP
-    # mcp.run(transport="http", port=8000)
+    mcp.run()
 
 
 if __name__ == "__main__":

@@ -31,7 +31,19 @@ The dependencies include `fastmcp`, `httpx`, and the reference `mcp` CLI.
 The server defaults to the `stdio` transport so it is typically spawned by an MCP client. To manually exercise it during development you can use the MCP CLI inspector:
 
 ```bash
-uv run mcp dev server.py
+source .venv/bin/activate
+
+# STDIO
+fastmcp run server.py:mcp
+# HTTP
+fastmcp run server.py:mcp --transport http --port 8000
+
+# DEV
+# STDIO
+fastmcp dev server.py
+# HTTP
+
+
 ```
 
 This opens an interactive shell where you can invoke `get_alerts` and `get_forecast` directly.

@@ -10,8 +10,21 @@ This repository contains a minimal client/server tutorial for working with weath
 ## Getting Started (Client + Server)
 
 1. Install the dependencies for both projects following the instructions in their respective directories.
-2. Run the client; it will launch the server automatically, so you should not start the server manually when using the client.
+2. Decide how you want the client to reach the server (stdio vs. HTTP) and follow the steps below.
 3. Point the client at the server instance if prompted.
+
+## Running the MCP Client
+
+- **STDIO (single process)**
+  - Activate the client virtual environment (`cd weather-mcp-client && source .venv/bin/activate`).
+  - Launch the client with the server path: `uv run client.py ../weather-mcp-server/server.py`.
+  - The client will spawn the server over stdio, so you do **not** need to start the server separately in this mode.
+
+- **HTTP (separate server process)**
+  - Activate the server environment (`cd weather-mcp-server && source .venv/bin/activate`).
+  - Start the server in HTTP mode, for example: `fastmcp run server.py:mcp --transport http --port 8000` (or adjust the command to your preferred runner/port).
+  - In a second shell, activate the client environment and run: `uv run client.py http://localhost:8000/mcp` (set `MCP_HTTP_HEADERS` if your server requires auth headers).
+  - Because HTTP transport expects an already running server, confirm the server process is healthy before starting the client.
 
 ## Standalone Server in VS Code
 

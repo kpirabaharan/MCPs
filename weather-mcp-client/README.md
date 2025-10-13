@@ -32,10 +32,19 @@ API_KEY=not-required   # optional if your endpoint is open
 ## Usage
 
 1. Activate the virtual environment: `source .venv/bin/activate`
-2. Launch the client and point it at an MCP server script:
+2. Launch the client and point it at an MCP server:
    ```bash
+   # stdio transport (local script)
    uv run client.py ../weather-mcp-server/server.py
+
+   # streamable HTTP transport (remote server)
+   MCP_HTTP_HEADERS='{"Authorization": "Bearer <TOKEN>"}' \
+     uv run client.py https://your-mcp-host.example.com/mcp
    ```
+   When the argument starts with `http://` or `https://`, the client will switch to
+   the Streamable HTTP transport automatically. Optional request headers for the
+   handshake (for example `Authorization`) can be provided via the
+   `MCP_HTTP_HEADERS` environment variable as a JSON object.
 3. Type natural-language questions. The backing model decides when to call MCP tools and streams responses back to the terminal.
 4. Enter `quit` (or `exit`) to close the session.
 

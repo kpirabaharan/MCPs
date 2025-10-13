@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
 from logger import get_logger
@@ -76,8 +77,16 @@ class MCPClient:
         logger.info("Initializing MCPClient targeting %s", self.model)
         self.llm = OpenAI(base_url=base_url, api_key=api_key)
 
-    async def connect_to_server(self, server_script_path: str) -> None:
-        """Connect to an MCP server over stdio."""
+    async def connect_to_server(self, server_target: str) -> None:
+        """Connect to an MCP server over stdio or HTTP transport."""
+        if server_target.startswith(("http://", "https://")):
+            await self._connect_http_server(server_target)
+            return
+
+        await self._connect_stdio_server(server_target)
+
+    async def _connect_stdio_server(self, server_script_path: str) -> None:
+        """Connect to a local MCP server launched via stdio."""
         is_python = server_script_path.endswith(".py")
         is_js = server_script_path.endswith(".js")
         if not (is_python or is_js):
@@ -93,7 +102,35 @@ class MCPClient:
 
         response = await self.session.list_tools()
         tools = [tool.name for tool in response.tools]
-        logger.info("Connected to server %s with tools: %s", server_script_path, tools)
+        logger.info("Connected to stdio server %s with tools: %s", server_script_path, tools)
+
+    async def _connect_http_server(self, server_url: str) -> None:
+        """Connect to an MCP server exposed via Streamable HTTP transport."""
+        headers = None
+        headers_env = os.getenv("MCP_HTTP_HEADERS")
+        if headers_env:
+            try:
+                headers = json.loads(headers_env)
+                if not isinstance(headers, dict):
+                    raise ValueError
+                headers = {str(k): str(v) for k, v in headers.items()}
+            except ValueError as exc:
+                raise ValueError("MCP_HTTP_HEADERS must be JSON object of header names and values") from exc
+
+        transport = await self.exit_stack.enter_async_context(streamablehttp_client(server_url, headers=headers))
+        read, write, get_session_id = transport
+
+        self.session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+        await self.session.initialize()
+
+        response = await self.session.list_tools()
+        tools = [tool.name for tool in response.tools]
+
+        session_id = get_session_id()
+        if session_id:
+            logger.info("Connected to HTTP server %s (session %s) with tools: %s", server_url, session_id, tools)
+        else:
+            logger.info("Connected to HTTP server %s with tools: %s", server_url, tools)
 
     async def process_query(self, query: str) -> str:
         if self.session is None:
@@ -164,8 +201,7 @@ class MCPClient:
                 break
 
             # Record the assistant message, including tool call metadata, in the transcript.
-            assistant_message: Dict[str, Any] = {"role": "assistant", "content": content_text}
-            assistant_message["tool_calls"] = []
+            assistant_message: Dict[str, Any] = {"role": "assistant", "content": content_text, "tool_calls": []}
 
             for tool_call in tool_calls:
                 assistant_message["tool_calls"].append(
