@@ -1,0 +1,14 @@
+# Python caches and virtualenvs
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Local configuration and environment files
+.env
+
+# Logs and runtime artifacts
+logs/
+*.log
+
+# VCS metadata
+.git

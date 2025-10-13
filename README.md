@@ -23,6 +23,7 @@ This repository contains a minimal client/server tutorial for working with weath
 - **HTTP (separate server process)**
   - Activate the server environment (`cd weather-mcp-server && source .venv/bin/activate`).
   - Start the server in HTTP mode, for example: `fastmcp run server.py:mcp --transport http --port 8000` (or adjust the command to your preferred runner/port).
+  - Alternatively, build the Docker image in `weather-mcp-server/` (it defaults to stdio; pass `--transport http ...` after the image name to host over HTTP).
   - In a second shell, activate the client environment and run: `uv run client.py http://localhost:8000/mcp` (set `MCP_HTTP_HEADERS` if your server requires auth headers).
   - Because HTTP transport expects an already running server, confirm the server process is healthy before starting the client.
 
@@ -31,19 +32,34 @@ This repository contains a minimal client/server tutorial for working with weath
 1. Add the server directory to your VS Code workspace (`File` → `Add Folder to Workspace…` → select `weather-mcp-server`).
 2. Install server dependencies (`uv venv && source .venv/bin/activate && uv sync`).
 3. Update your MCP configuration (`mcp.json`) so VS Code (or the MCP extension) can spawn the server:
-   ```json
-   {
-     "servers": {
-       "weather": {
-         "command": "uv",
-         "args": ["run", "server.py"],
-         "cwd": "/absolute/path/to/weather-tutorial/weather-mcp-server"
-       }
-     }
-   }
-   ```
-   - Use an absolute `cwd` so the extension resolves the script reliably.
-   - Adjust `command`/`args` if you prefer a different launch method (e.g. `python server.py`).
+
+   a) Launch with `uv` (default):
+      ```json
+      {
+        "servers": {
+          "weather": {
+            "command": "uv",
+            "args": ["run", "server.py"],
+            "cwd": "/absolute/path/to/weather-tutorial/weather-mcp-server"
+          }
+        }
+      }
+      ```
+      Use an absolute `cwd` so the extension resolves the script reliably, and adjust `command`/`args` if you prefer a different launch method (for example `python server.py`).
+
+   b) Launch with Docker:
+      ```json
+      {
+        "servers": {
+          "weather": {
+            "command": "docker",
+            "args": ["run", "--rm", "-i", "weather-mcp-server"],
+            "cwd": "/absolute/path/to/weather-tutorial/weather-mcp-server"
+          }
+        }
+      }
+      ```
+      Build the image in `weather-mcp-server/` (`docker build -t weather-mcp-server .`), and append extra flags to `args` (for example `"-p", "8000:8000", "--", "--transport", "http", "--port", "8000"`) if you need the HTTP transport instead of stdio.
 4. Reload VS Code or the MCP extension so it picks up the updated configuration, then use the MCP panel to connect to the `weather` server for manual testing.
 
 ## Contributing

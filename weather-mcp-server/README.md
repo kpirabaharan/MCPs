@@ -50,6 +50,27 @@ This opens an interactive shell where you can invoke `get_alerts` and `get_forec
 
 If you prefer to host the server over HTTP, flip the `mcp.run` call in `server.py` to `transport="http"` and choose a port. Clients can then connect via HTTP instead of stdio.
 
+## Container image
+
+Build the Docker image from this directory. The container defaults to the stdio transport, matching the non-container workflow:
+
+```bash
+# Build the image (tagged as weather-mcp-server)
+docker build -t weather-mcp-server .
+
+# Run with stdio (use -it so the pipes stay attached)
+docker run --rm -it weather-mcp-server
+```
+
+To host the server over HTTP, append the desired flags after the image name when starting the container:
+
+```bash
+docker run --rm -p 8000:8000 weather-mcp-server \
+  --transport http --host 0.0.0.0 --port 8000
+```
+
+The `.dockerignore` keeps local virtual environments, logs, and Git metadata out of the build context.
+
 ## Logging
 
 Structured logs are written to stderr and also rotated daily in the `logs/` directory (e.g. `logs/weather_mcp_server_2025-01-01.log`). Adjust `logger/config.py` if you need a different logging format or destination.
