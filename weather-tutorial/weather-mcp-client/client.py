@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
+from mcp import types as mcp_types
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.client.stdio import stdio_client
 from openai import OpenAI
@@ -58,6 +59,60 @@ def _flatten_tool_content(content: Any) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
+def _prompt_arguments_to_schema(
+    arguments: Optional[List[mcp_types.PromptArgument]],
+) -> Dict[str, Any]:
+    schema: Dict[str, Any] = {"type": "object", "properties": {}}
+    if not arguments:
+        return schema
+
+    required: List[str] = []
+    for argument in arguments:
+        schema["properties"][argument.name] = {
+            "type": "string",
+            "description": argument.description or "",
+        }
+        if argument.required:
+            required.append(argument.name)
+
+    if required:
+        schema["required"] = required
+
+    return schema
+
+
+def _prompt_message_to_dict(
+    message: mcp_types.PromptMessage,
+) -> Dict[str, Any]:
+    content = message.content
+    text = getattr(content, "text", None)
+
+    if text is not None:
+        value: Any = text
+    else:
+        dump = getattr(content, "model_dump", None)
+        if callable(dump):
+            value = dump(exclude_none=True)
+        else:
+            value = str(content)
+
+    return {"role": message.role, "content": value}
+
+
+def _prompt_messages_to_text(messages: List[mcp_types.PromptMessage]) -> str:
+    lines: List[str] = []
+    for index, message in enumerate(messages, start=1):
+        data = _prompt_message_to_dict(message)
+        content = data["content"]
+        if isinstance(content, (dict, list)):
+            rendered = json.dumps(content)
+        else:
+            rendered = str(content)
+        lines.append(f"[{data['role']} #{index}] {rendered}")
+
+    return "\n".join(lines)
+
+
 class MCPClient:
     def __init__(self) -> None:
         self.session: Optional[ClientSession] = None
@@ -93,16 +148,29 @@ class MCPClient:
             raise ValueError("Server script must be a .py or .js file")
 
         command = "python" if is_python else "node"
-        server_params = StdioServerParameters(command=command, args=[server_script_path], env=None)
+        server_params = StdioServerParameters(
+            command=command, args=[server_script_path], env=None
+        )
 
-        transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
+        transport = await self.exit_stack.enter_async_context(
+            stdio_client(server_params)
+        )
         read, write = transport
-        self.session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+        self.session = await self.exit_stack.enter_async_context(
+            ClientSession(read, write)
+        )
         await self.session.initialize()
 
-        response = await self.session.list_tools()
-        tools = [tool.name for tool in response.tools]
-        logger.info("Connected to stdio server %s with tools: %s", server_script_path, tools)
+        tools = await self.session.list_tools()
+        prompts = await self.session.list_prompts()
+        prompt_names = [prompt.name for prompt in prompts.prompts]
+        tools_names = [tool.name for tool in tools.tools]
+        logger.info(
+            "Connected to stdio server %s with prompts: %s, with tools: %s",
+            server_script_path,
+            prompt_names,
+            tools_names,
+        )
 
     async def _connect_http_server(self, server_url: str) -> None:
         """Connect to an MCP server exposed via Streamable HTTP transport."""
@@ -115,12 +183,18 @@ class MCPClient:
                     raise ValueError
                 headers = {str(k): str(v) for k, v in headers.items()}
             except ValueError as exc:
-                raise ValueError("MCP_HTTP_HEADERS must be JSON object of header names and values") from exc
+                raise ValueError(
+                    "MCP_HTTP_HEADERS must be JSON object of header names and values"
+                ) from exc
 
-        transport = await self.exit_stack.enter_async_context(streamablehttp_client(server_url, headers=headers))
+        transport = await self.exit_stack.enter_async_context(
+            streamablehttp_client(server_url, headers=headers)
+        )
         read, write, get_session_id = transport
 
-        self.session = await self.exit_stack.enter_async_context(ClientSession(read, write))
+        self.session = await self.exit_stack.enter_async_context(
+            ClientSession(read, write)
+        )
         await self.session.initialize()
 
         response = await self.session.list_tools()
@@ -128,7 +202,12 @@ class MCPClient:
 
         session_id = get_session_id()
         if session_id:
-            logger.info("Connected to HTTP server %s (session %s) with tools: %s", server_url, session_id, tools)
+            logger.info(
+                "Connected to HTTP server %s (session %s) with tools: %s",
+                server_url,
+                session_id,
+                tools,
+            )
         else:
             logger.info("Connected to HTTP server %s with tools: %s", server_url, tools)
 
@@ -138,11 +217,27 @@ class MCPClient:
 
         logger.info("Processing query: %s", query)
         # Refresh the tool catalog so the orchestrator sees up-to-date capabilities.
-        list_response = await self.session.list_tools()
-        for tool in list_response.tools:
+        list_tools = await self.session.list_tools()
+        for tool in list_tools.tools:
             logger.info("Processing tool: %s", tool.name)
             logger.info("Description: %s", tool.description)
             logger.info("Input Parameters: %s", _schema_to_dict(tool.inputSchema))
+
+        list_prompts = await self.session.list_prompts()
+        for prompt in list_prompts.prompts:
+            logger.info("Processing prompt: %s", prompt.name)
+            logger.info("Description: %s", prompt.description)
+            logger.info(
+                "Arguments: %s",
+                [
+                    {
+                        "name": argument.name,
+                        "description": argument.description,
+                        "required": argument.required,
+                    }
+                    for argument in (prompt.arguments or [])
+                ],
+            )
 
         # Present each MCP tool to the model using the OpenAI tool/function schema.
         available_tools = [
@@ -154,8 +249,26 @@ class MCPClient:
                     "parameters": _schema_to_dict(tool.inputSchema),
                 },
             }
-            for tool in list_response.tools
+            for tool in list_tools.tools
         ]
+        available_prompts: List[Dict[str, Any]] = []
+        prompt_name_map: Dict[str, str] = {}
+        for prompt in list_prompts.prompts:
+            function_name = f"mcp_prompt__{prompt.name}"
+            available_prompts.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "description": (prompt.description or "")
+                        + " (MCP prompt)",
+                        "parameters": _prompt_arguments_to_schema(prompt.arguments),
+                    },
+                }
+            )
+            prompt_name_map[function_name] = prompt.name
+
+        available_items = available_tools + available_prompts
 
         messages: List[Dict[str, Any]] = [
             {"role": "user", "content": query},
@@ -170,15 +283,15 @@ class MCPClient:
                 "Starting completion turn %d with %d message(s) and %d tool(s)",
                 turn_index,
                 len(messages),
-                len(available_tools),
+                len(available_items),
             )
             # Assemble the request payload that the OpenAI-compatible API expects.
             request_kwargs: Dict[str, Any] = {
                 "model": self.model,
                 "messages": messages,
             }
-            if available_tools:
-                request_kwargs["tools"] = available_tools
+            if available_items:
+                request_kwargs["tools"] = available_items
                 request_kwargs["tool_choice"] = "auto"
 
             # Ask the model for the next turn and capture both text and tool calls.
@@ -197,11 +310,18 @@ class MCPClient:
 
             tool_calls = message.tool_calls or []
             if not tool_calls:
-                logger.info("Turn %d produced no tool calls; ending conversation with model", turn_index)
+                logger.info(
+                    "Turn %d produced no tool calls; ending conversation with model",
+                    turn_index,
+                )
                 break
 
             # Record the assistant message, including tool call metadata, in the transcript.
-            assistant_message: Dict[str, Any] = {"role": "assistant", "content": content_text, "tool_calls": []}
+            assistant_message: Dict[str, Any] = {
+                "role": "assistant",
+                "content": content_text,
+                "tool_calls": [],
+            }
 
             for tool_call in tool_calls:
                 assistant_message["tool_calls"].append(
@@ -229,30 +349,100 @@ class MCPClient:
                     )
                     arguments = json.loads(tool_call.function.arguments or "{}")
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"Failed to parse arguments for tool {tool_name}: {exc}") from exc
+                    raise ValueError(
+                        f"Failed to parse arguments for tool {tool_name}: {exc}"
+                    ) from exc
 
-                # Execute the MCP tool and fold the response back into the model dialogue.
-                logger.info("Invoking MCP tool %s with parsed args %s", tool_name, arguments)
-                result = await self.session.call_tool(tool_name, arguments)
-                tool_output = _flatten_tool_content(getattr(result, "content", None))
-                summary = f"[Tool {tool_name} called with args {arguments}]"
-                final_chunks.append(summary)
-                if tool_output:
+                if tool_name in prompt_name_map:
+                    prompt_original_name = prompt_name_map[tool_name]
                     logger.info(
-                        "Tool %s returned %d character(s) of content", tool_name, len(tool_output)
+                        "Invoking MCP prompt %s via %s with args %s",
+                        prompt_original_name,
+                        tool_name,
+                        arguments,
                     )
-                    final_chunks.append(tool_output)
+                    if arguments is not None and not isinstance(arguments, dict):
+                        raise ValueError(
+                            f"Prompt {prompt_original_name} expects arguments as a JSON object"
+                        )
+                    prompt_result = await self.session.get_prompt(
+                        prompt_original_name,
+                        arguments if arguments else None,
+                    )
+                    prompt_text = _prompt_messages_to_text(prompt_result.messages)
+                    summary = (
+                        f"[Prompt {prompt_original_name} called with args {arguments}]"
+                    )
+                    final_chunks.append(summary)
+                    if prompt_text:
+                        final_chunks.append(prompt_text)
 
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": tool_name,
-                        "content": tool_output or "(no output)",
-                    }
-                )
+                    tool_message_content = json.dumps(
+                        {
+                            "prompt": prompt_original_name,
+                            "messages": [
+                                _prompt_message_to_dict(message)
+                                for message in prompt_result.messages
+                            ],
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_name,
+                            "content": tool_message_content,
+                        }
+                    )
 
-                logger.info("Tool %s returned %s", tool_name, "output" if tool_output else "no output")
+                    for prompt_message in prompt_result.messages:
+                        prompt_message_dict = _prompt_message_to_dict(prompt_message)
+                        content_value = prompt_message_dict["content"]
+                        if isinstance(content_value, (dict, list)):
+                            content_value = json.dumps(content_value)
+                        messages.append(
+                            {
+                                "role": prompt_message_dict["role"],
+                                "content": content_value,
+                            }
+                        )
+
+                    logger.info(
+                        "Prompt %s returned %d message(s)",
+                        prompt_original_name,
+                        len(prompt_result.messages),
+                    )
+                else:
+                    # Execute the MCP tool and fold the response back into the model dialogue.
+                    logger.info(
+                        "Invoking MCP tool %s with parsed args %s", tool_name, arguments
+                    )
+                    result = await self.session.call_tool(tool_name, arguments)
+                    tool_output = _flatten_tool_content(getattr(result, "content", None))
+                    summary = f"[Tool {tool_name} called with args {arguments}]"
+                    final_chunks.append(summary)
+                    if tool_output:
+                        logger.info(
+                            "Tool %s returned %d character(s) of content",
+                            tool_name,
+                            len(tool_output),
+                        )
+                        final_chunks.append(tool_output)
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_name,
+                            "content": tool_output or "(no output)",
+                        }
+                    )
+
+                    logger.info(
+                        "Tool %s returned %s",
+                        tool_name,
+                        "output" if tool_output else "no output",
+                    )
 
             turn_index += 1
 
