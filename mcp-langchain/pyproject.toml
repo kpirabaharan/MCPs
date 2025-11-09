@@ -1,0 +1,15 @@
+[project]
+name = "mcp-langchain"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "env-canada>=0.12.1",
+    "fastmcp>=2.12.5",
+    "httpx>=0.28.1",
+    "langchain>=1.0.0",
+    "langchain-mcp-adapters>=0.1.11",
+    "langchain-ollama>=1.0.0",
+    "pydantic>=2.12.3",
+]

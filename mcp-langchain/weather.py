@@ -1,8 +1,9 @@
-from typing import Any
+from typing import Any, List
 import httpx
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from logger import get_logger
+from env_canada import ECWeather
 
 mcp = FastMCP(name="weather")
 
@@ -10,20 +11,6 @@ NWS_API_BASE = "https://api.weather.gov"
 USER_AGENT = "weather-app/1.0"
 
 log = get_logger("weather_mcp_server")
-
-
-class WeatherAlert(BaseModel):
-    event: str = Field(
-        ..., description="Name of the weather event, e.g. Tornado Warning"
-    )
-    area: str = Field(..., description="Areas affected by the alert")
-    severity: str | None = Field(None, description="Relative severity provided by NWS")
-    description: str | None = Field(
-        None, description="Full description text from the alert"
-    )
-    instructions: str | None = Field(
-        None, description="Recommended actions or instructions"
-    )
 
 
 class WeatherData(BaseModel):
@@ -34,12 +21,6 @@ class WeatherData(BaseModel):
     temperature_unit: str | None = Field(
         "C",
         description="Unit for the reported temperature (always Celsius when provided)",
-    )
-    wind_speed: str | None = Field(
-        None, description="Reported wind speed, e.g. 5 to 10 mph"
-    )
-    wind_direction: str | None = Field(
-        None, description="Compass direction the wind is coming from"
     )
     detailed_forecast: str = Field(
         ..., description="Full forecast narrative for the period"
@@ -60,58 +41,33 @@ async def make_nws_request(url: str) -> dict[str, Any] | None:
             return None
 
 
-@mcp.prompt(title="Get weather alerts for a US State")
-def prompt_get_alerts(state_abbreviated: str) -> str:
-    return f"Get weather alerts for the US state with the two-letter code '{state_abbreviated}'."
+async def make_can_request(
+    latitude: float, longitude: float
+) -> List[dict[str, Any]] | None:
+    weather = ECWeather(coordinates=(latitude, longitude))
+
+    try:
+        await weather.update()
+        return weather.daily_forecasts
+    except Exception as e:
+        log.error(f"Error fetching Canadian weather data: {e}")
+        return None
+
+
+@mcp.prompt(title="Forecast (US coordinates)", name="weather_us")
+def prompt_forecast_us(latitude: float, longitude: float) -> str:
+    return (
+        "Use `weather.get_forecast_us` for this location.\n"
+        f"- latitude: {latitude}\n"
+        f"- longitude: {longitude}\n"
+        "Concisely print today's temperature."
+    )
 
 
 @mcp.tool(
-    description="Get weather alerts for a US State",
+    description="Get weather alerts for a location in US. Input in longitude and latitude"
 )
-async def get_alerts(state_abbreviated: str) -> list[WeatherAlert]:
-    """Get weather alerts for a US State
-
-    Args:
-        state_abbreviated: Two-letter US state code (eg. CA, NY)
-    """
-    if not state_abbreviated:
-        log.error(f"[get_alerts] Invalid state input: {state_abbreviated!r}")
-        return []
-
-    log.info(f"[get_alerts] State: {state_abbreviated} -> {state_abbreviated}")
-    url = f"{NWS_API_BASE}/alerts/active/area/{state_abbreviated}"
-    log.info(f"[get_alerts] URL: {url}")
-    data = await make_nws_request(url)
-
-    if data is None:
-        log.info("No alerts data")
-        return []
-
-    features = data.get("features", [])
-    if not features:
-        log.error("No weather alerts data, missing features")
-        return []
-
-    alerts: list[WeatherAlert] = []
-    for feature in features:
-        props = feature.get("properties", {})
-        alerts.append(
-            WeatherAlert(
-                event=props.get("event") or "Unknown",
-                area=props.get("areaDesc") or "Unknown",
-                severity=props.get("severity"),
-                description=props.get("description"),
-                instructions=props.get("instruction"),
-            )
-        )
-
-    return alerts
-
-
-@mcp.tool(
-    description="Get weather alerts for location. Input in longitude and latitude"
-)
-async def get_forecast(latitude: float, longitude: float) -> list[WeatherData]:
+async def get_forecast_us(latitude: float, longitude: float) -> list[WeatherData]:
     """Get weather forecast for a location.
 
     Args:
@@ -121,7 +77,6 @@ async def get_forecast(latitude: float, longitude: float) -> list[WeatherData]:
     log.info(f"[get_forecast] Latitude {latitude}, Longitude {longitude}")
     # First get the forecast grid endpoint
     points_url = f"{NWS_API_BASE}/points/{latitude},{longitude}"
-    log.info(f"Fetching weather forecast for {latitude}, {longitude}")
     points_data = await make_nws_request(points_url)
 
     if not points_data:
@@ -168,9 +123,44 @@ async def get_forecast(latitude: float, longitude: float) -> list[WeatherData]:
                     else None
                 ),
                 temperature_unit="C" if celsius_temperature is not None else None,
-                wind_speed=period.get("windSpeed"),
-                wind_direction=period.get("windDirection"),
                 detailed_forecast=period.get("detailedForecast") or "",
+            )
+        )
+
+    return forecasts
+
+
+@mcp.tool(
+    description="Get weather alerts for location in Canada. Input in longitude and latitude"
+)
+async def get_forecast_can(latitude: float, longitude: float) -> list[WeatherData]:
+    """Get weather forecast for a location.
+
+    Args:
+        latitude: Latitude of the location (eg. 43.8611)
+        longitude: Longitude of the location (eg. -79.0259)
+    """
+    log.info(f"[get_forecast_can] Latitude {latitude}, Longitude {longitude}")
+    forecast_data = await make_can_request(latitude, longitude)
+
+    if not forecast_data:
+        log.error(f"No weather forecast data for {latitude}, {longitude}")
+        return []
+
+    forecasts: list[WeatherData] = []
+    for period in forecast_data[:5]:
+        period_name = period.get("period")
+        log.info(f"Fetched forecast for period {period_name}")
+
+        temperature = period.get("temperature")
+        unit = "°C"
+
+        forecasts.append(
+            WeatherData(
+                period=period_name,
+                temperature=temperature,
+                temperature_unit=unit,
+                detailed_forecast=period.get("text_summary") or "",
             )
         )
 
